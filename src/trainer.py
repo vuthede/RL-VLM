@@ -114,6 +114,10 @@ class BaseTrainer:
     def train_epoch(self):
         self.model.train()
         total_loss = 0.0
+        
+        print("WARNING!!! Set max iter SFT =150 for quick")
+        max_iters = 150
+        cur_iter=0
 
         for batch in tqdm(self.train_loader, desc="Training Epoch"):
             inputs, answers = batch
@@ -124,8 +128,14 @@ class BaseTrainer:
                 text=answers,
                 return_tensors="pt",
                 padding=True,
-                return_token_type_ids=False
+                truncation=False,
+                return_token_type_ids=False,
+                add_special_tokens=True,
             ).input_ids.to(self.device)
+            
+        
+            labels[labels == self.processor.tokenizer.pad_token_id] = -100  # Ignore padding in loss
+
 
             outputs = self.model(
                 input_ids=input_ids,
@@ -145,8 +155,14 @@ class BaseTrainer:
 
             total_loss += loss.item()
             self.global_step += 1
+            
+            cur_iter += 1
+            if cur_iter > max_iters:
+                break
 
-        avg_loss = total_loss / len(self.train_loader)
+        # avg_loss = total_loss / len(self.train_loader)
+        avg_loss = total_loss / cur_iter
+        
         if self.accelerator is not None:
             self.accelerator.wait_for_everyone()
 
@@ -166,12 +182,23 @@ class BaseTrainer:
                 inputs, answers = batch
                 input_ids     = inputs["input_ids"].to(self.device)
                 pixel_values  = inputs["pixel_values"].to(self.device)
+                # labels = self.processor.tokenizer(
+                #     text=answers,
+                #     return_tensors="pt",
+                #     padding=True,
+                #     return_token_type_ids=False
+                # ).input_ids.to(self.device)
                 labels = self.processor.tokenizer(
                     text=answers,
                     return_tensors="pt",
                     padding=True,
-                    return_token_type_ids=False
+                    truncation=False,
+                    return_token_type_ids=False,
+                    add_special_tokens=True,
                 ).input_ids.to(self.device)
+            
+        
+                labels[labels == self.processor.tokenizer.pad_token_id] = -100  # Ignore padding in loss
 
                 outputs = self.model(
                     input_ids=input_ids,
@@ -212,12 +239,37 @@ class BaseTrainer:
         if self.accelerator is not None:
             self.accelerator.wait_for_everyone()
 
+    # def score_sequence(self, input_ids, pixel_values, decoder_input_ids):
+    #     batch_size = decoder_input_ids.shape[0]
+    #     start_tokens = torch.tensor([2, 0], device=self.device).unsqueeze(0).expand(batch_size, -1)
+    #     decoder_input_ids = torch.cat([start_tokens, decoder_input_ids], dim=1)
+    #     dec_in = decoder_input_ids[:, :-1].contiguous()
+    #     labels = decoder_input_ids[:, 1:].contiguous()
+
+    #     outputs = self.model(
+    #         input_ids=input_ids,
+    #         pixel_values=pixel_values,
+    #         decoder_input_ids=dec_in,
+    #         labels=labels,
+    #         return_dict=True
+    #     )
+    #     logits = outputs.logits
+    #     log_probs = torch.log_softmax(logits, dim=-1)
+    #     forced_lps = log_probs.gather(2, labels.unsqueeze(2)).squeeze(2)
+    #     probs = log_probs.exp()
+    #     token_entropies = -(probs * log_probs).sum(dim=-1)
+    #     mean_entropy = token_entropies.mean()
+    #     return forced_lps, mean_entropy
     def score_sequence(self, input_ids, pixel_values, decoder_input_ids):
         batch_size = decoder_input_ids.shape[0]
-        start_tokens = torch.tensor([2, 0], device=self.device).unsqueeze(0).expand(batch_size, -1)
+        bos_token_id = self.processor.tokenizer.bos_token_id  # Verify default
+        start_tokens = torch.full((batch_size, 1), bos_token_id, dtype=torch.long, device=self.device)
         decoder_input_ids = torch.cat([start_tokens, decoder_input_ids], dim=1)
         dec_in = decoder_input_ids[:, :-1].contiguous()
         labels = decoder_input_ids[:, 1:].contiguous()
+
+        # Handle padding if present (assuming from earlier code)
+        labels[labels == self.processor.tokenizer.pad_token_id] = -100
 
         outputs = self.model(
             input_ids=input_ids,
@@ -228,10 +280,10 @@ class BaseTrainer:
         )
         logits = outputs.logits
         log_probs = torch.log_softmax(logits, dim=-1)
-        forced_lps = log_probs.gather(2, labels.unsqueeze(2)).squeeze(2)
+        forced_lps = log_probs.gather(2, labels.unsqueeze(2)).squeeze(2)  # Masked by -100
         probs = log_probs.exp()
         token_entropies = -(probs * log_probs).sum(dim=-1)
         mean_entropy = token_entropies.mean()
-        return forced_lps, mean_entropy
 
+        return forced_lps, mean_entropy
 

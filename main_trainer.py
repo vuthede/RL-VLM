@@ -11,7 +11,9 @@ from src.config import (
     TRAIN_SUBSET_SIZE, GRPO_EPOCHS, USE_ACCELERATOR, GRPO_LEARNING_RATE,
     TENSORBOARD_LOG, POLICY_UPDATE
 )
-from src.data_loader import load_and_merge_datasets, CirclesQADataset
+# from src.data_loader import load_and_merge_datasets, CirclesQADataset
+from src.data_loader_nohf import load_and_merge_datasets, CirclesQADataset
+
 from src.model_manager import initialize_model_and_processor
 from src.trainer import *
 from src.GRPOtrainer import GRPOTrainer
@@ -34,15 +36,24 @@ def main():
         tb_writer = None
 
     # Load and merge datasets from disk
-    dataset = load_and_merge_datasets()
+    # dataset = load_and_merge_datasets()
+    dataset_dict = load_and_merge_datasets(
+        data_dir="/dms/workspace_2025/vuthede/VLM/RL-VLM/notebooks/circles_dataset",
+        prefix="<QA><CirclesQA>",
+        answers_options="full"
+    )
     logger.info("Dataset loaded successfully.")
+
 
     # Create custom dataset objects for training and validation
     answers_options="full"
     if POLICY_UPDATE=="REINFORCE":
         answers_options="shortened"
-    train_data = CirclesQADataset(dataset["train"], prefix="<CirclesQA>", answers_options=answers_options)
-    val_data = CirclesQADataset(dataset["validation"], prefix="<CirclesQA>", answers_options=answers_options)
+    # train_data = CirclesQADataset(dataset["train"], prefix="<QA><CirclesQA>", answers_options=answers_options)
+    # val_data = CirclesQADataset(dataset["validation"], prefix="<QA><CirclesQA>", answers_options=answers_options)
+    train_data = dataset_dict['train']
+    val_data = dataset_dict['validation']
+    logger.info("Dataset loaded successfully.")
 
     # Initialize model and processor
     model, processor = initialize_model_and_processor(DEVICE)
@@ -92,6 +103,8 @@ def main():
         "tensorboard_log": TENSORBOARD_LOG,
     }
     
+    # import pdb; pdb.set_trace();
+    
     device = DEVICE
 
     # ------------------
@@ -111,45 +124,47 @@ def main():
         if standard_trainer.accelerator is None or standard_trainer.accelerator.is_main_process:
             logger.info("Evaluating on test split after SFT training.")
             model_to_test = standard_trainer.model.module if hasattr(standard_trainer.model, "module") else standard_trainer.model
-            if j % 20 == 19:
-                evaluate_samples(
-                    model_to_test, standard_trainer.processor, DEVICE, dataset, "test",
-                    prefix="<CirclesQA>",
-                    N=20, 
-                    Q="Is the number of circles odd or even?",
-                    print_outputs=True,
-                    logger=logger,
-                )
-                evaluate_samples(
-                    model_to_test, standard_trainer.processor, DEVICE, dataset, "test_hard_number",
-                    prefix="<CirclesQA>",
-                    N=20, 
-                    Q="Is the number of circles odd or even?",
-                    print_outputs=True,
-                    logger=logger,
-                )
+            # if j % 20 == 19:
+            if True:
+            
+                # evaluate_samples(
+                #     model_to_test, standard_trainer.processor, DEVICE, dataset, "test",
+                #     prefix="<QA><CirclesQA>",
+                #     N=20, 
+                #     Q="Is the number of circles odd or even?",
+                #     print_outputs=True,
+                #     logger=logger,
+                # )
+                # evaluate_samples(
+                #     model_to_test, standard_trainer.processor, DEVICE, dataset, "test_hard_number",
+                #     prefix="<QA><CirclesQA>",
+                #     N=20, 
+                #     Q="Is the number of circles odd or even?",
+                #     print_outputs=True,
+                #     logger=logger,
+                # )
                 test_acc = evaluate_samples(
-                    model_to_test, standard_trainer.processor, DEVICE, dataset, "test",
-                    prefix="<CirclesQA>",
-                    N=1000, 
+                    model_to_test, standard_trainer.processor, DEVICE, dataset_dict, "test",
+                    prefix="<QA><CirclesQA>",
+                    N=None, # default is len of dataset 
                     Q="Is the number of circles odd or even?",
-                    print_outputs=False,
+                    print_outputs=True,
                     logger=logger,
                 )
-                logger.info(f"SFT Evaluation Accuracy on test: {test_acc}")
+                logger.info(f"SFT Evaluation Accuracy on test epoch :{j+1}: {test_acc}")
                 if tb_writer:
                     tb_writer.add_scalar("SIFT/test_acc", test_acc, j)
-                test_acc_hard = evaluate_samples(
-                    model_to_test, standard_trainer.processor, DEVICE, dataset, "test_hard_number",
-                    prefix="<CirclesQA>",
-                    N=1000, 
-                    Q="Is the number of circles odd or even?",
-                    print_outputs=False,
-                    logger=logger,
-                )
-                if tb_writer:
-                    tb_writer.add_scalar("SIFT/test_acc_hard", test_acc_hard, j)
-                logger.info(f"SFT Evaluation Accuracy on test (hard): {test_acc_hard}")
+                # test_acc_hard = evaluate_samples(
+            #     model_to_test, standard_trainer.processor, DEVICE, dataset, "test_hard_number",
+                #     prefix="<QA><CirclesQA>",
+                #     N=1000, 
+                #     Q="Is the number of circles odd or even?",
+                #     print_outputs=False,
+                #     logger=logger,
+                # )
+                # if tb_writer:
+                #     tb_writer.add_scalar("SIFT/test_acc_hard", test_acc_hard, j)
+                # logger.info(f"SFT Evaluation Accuracy on test (hard): {test_acc_hard}")
 
 
     # ------------------
@@ -160,14 +175,14 @@ def main():
         model_to_test = standard_trainer.accelerator.unwrap_model(standard_trainer.model)
     else:
         model_to_test = standard_trainer.model
-    evaluate_samples(
-        model_to_test, standard_trainer.processor, DEVICE, dataset, "test",
-        prefix="<CirclesQA>",
-        N=20, 
-        Q="Is the number of circles odd or even?",
-        print_outputs=True,
-        logger=logger,
-    )
+    # evaluate_samples(
+    #     model_to_test, standard_trainer.processor, DEVICE, dataset_dict, "test",
+    #     prefix="<QA><CirclesQA>",
+    #     N=None, 
+    #     Q="Is the number of circles odd or even?",
+    #     print_outputs=True,
+    #     logger=logger,
+    # )
     if POLICY_UPDATE=="GRPO":
         rl_trainer = GRPOTrainer(model_to_test, standard_trainer.processor, train_loader, val_loader, device, config, use_accelerator=USE_ACCELERATOR, tb_writer=tb_writer)
     elif POLICY_UPDATE=="PPO":
@@ -180,14 +195,15 @@ def main():
         print(f"Unknown policy passed {POLICY_UPDATE}. Terminating.")
         print(f"Available policies GRPO, PPO, AC and REINFORCE.")
         return
-    evaluate_samples(
-        model_to_test, rl_trainer.processor, DEVICE, dataset, "test",
-        prefix="<CirclesQA>",
-        N=20, 
-        Q="Is the number of circles odd or even?",
-        print_outputs=True,
-        logger=logger,
-    )
+    
+    # evaluate_samples(
+    #     model_to_test, rl_trainer.processor, DEVICE, dataset_dict, "test",
+    #     prefix="<QA><CirclesQA>",
+    #     N=20, 
+    #     Q="Is the number of circles odd or even?",
+    #     print_outputs=True,
+    #     logger=logger,
+    # )
 
     for i in range(1000):
         rl_trainer.train_rl()
@@ -199,49 +215,51 @@ def main():
                 model_to_test = rl_trainer.accelerator.unwrap_model(rl_trainer.model)
             else:
                 model_to_test = rl_trainer.model
-            if i % 5 == 4:
+            if True:
                 logger.info(f"Final evaluation after {POLICY_UPDATE} training:")
                 logger.info("Test:")
-                evaluate_samples(
-                    model_to_test, rl_trainer.processor, DEVICE, dataset, "test",
-                    prefix="<CirclesQA>",
-                    N=20, 
-                    Q="Is the number of circles odd or even?",
-                    print_outputs=True,
-                    logger=logger,
-                )
-                logger.info("Test (hard):")
-                evaluate_samples(
-                    model_to_test, rl_trainer.processor, DEVICE, dataset, "test_hard_number",
-                    prefix="<CirclesQA>",
-                    N=20, 
-                    Q="Is the number of circles odd or even?",
-                    print_outputs=True,
-                    logger=logger,
-                )
+                # evaluate_samples(
+                #     model_to_test, rl_trainer.processor, DEVICE, dataset, "test",
+                #     prefix="<QA><CirclesQA>",
+                #     N=20, 
+                #     Q="Is the number of circles odd or even?",
+                #     print_outputs=True,
+                #     logger=logger,
+                # )
+                # logger.info("Test (hard):")
+                # evaluate_samples(
+                #     model_to_test, rl_trainer.processor, DEVICE, dataset, "test_hard_number",
+                #     prefix="<QA><CirclesQA>",
+                #     N=20, 
+                #     Q="Is the number of circles odd or even?",
+                #     print_outputs=True,
+                #     logger=logger,
+                # )
             
                 final_acc = evaluate_samples(
-                    model_to_test, rl_trainer.processor, DEVICE, dataset, "test",
-                    prefix="<CirclesQA>",
-                    N=100,
+                    model_to_test, rl_trainer.processor, DEVICE, dataset_dict, "test",
+                    prefix="<QA><CirclesQA>",
+                    N=None,
                     Q="Is the number of circles odd or even?",
-                    print_outputs=False,
+                    print_outputs=True,
                     logger=logger,
                 )
                 logger.info(f"Final Evaluation Accuracy on test: {final_acc}")
                 if tb_writer:
-                    tb_writer.add_scalar(f"{POLICY_UPDATE}/test_acc", final_acc, i+j)
-                final_acc = evaluate_samples(
-                    model_to_test, rl_trainer.processor, DEVICE, dataset, "test_hard_number",
-                    prefix="<CirclesQA>",
-                    N=100,
-                    Q="Is the number of circles odd or even?",
-                    print_outputs=False,
-                    logger=logger,
-                )
-                logger.info(f"Final Evaluation Accuracy on test (hard): {final_acc}")
-                if tb_writer:
-                    tb_writer.add_scalar(f"{POLICY_UPDATE}/test_acc_hard", final_acc, i+j)
+                    # tb_writer.add_scalar(f"{POLICY_UPDATE}/test_acc", final_acc, i+j)
+                    tb_writer.add_scalar(f"{POLICY_UPDATE}/test_acc", final_acc, i)
+                    
+                # final_acc = evaluate_samples(
+                #     model_to_test, rl_trainer.processor, DEVICE, dataset, "test_hard_number",
+                #     prefix="<QA><CirclesQA>",
+                #     N=100,
+                #     Q="Is the number of circles odd or even?",
+                #     print_outputs=False,
+                #     logger=logger,
+                # )
+                # logger.info(f"Final Evaluation Accuracy on test (hard): {final_acc}")
+                # if tb_writer:
+                #     tb_writer.add_scalar(f"{POLICY_UPDATE}/test_acc_hard", final_acc, i+j)
 
 if __name__ == "__main__":
     main()

@@ -123,18 +123,51 @@ def extract_vlm_data(text):
     answer    = ans_m.group(1).strip()   if ans_m   else None
     return reasoning, answer
 
-def extract_circles_from_reasoning(reasoning):
+# def extract_circles_from_reasoning(reasoning):
+#     """
+#     Parses lines of the form
+#       '- Color {color}, size {size}, at ({x},{y})'
+#     and returns a list of dicts with keys color,size,x,y.
+#     """
+#     pattern = re.compile(
+#         r"-\s*Color\s+(?P<color>\w+),\s*size\s+(?P<size>\d+),\s*at\s*\(\s*(?P<x>\d+)\s*,\s*(?P<y>\d+)\s*\)"
+#     )
+#     circles = [m.groupdict() for m in pattern.finditer(reasoning or "")]
+#     return circles
+
+def extract_circles_from_reasoning(reasoning: str) -> tuple[list[dict], int]:
     """
-    Parses lines of the form
-      '- Color {color}, size {size}, at ({x},{y})'
-    and returns a list of dicts with keys color,size,x,y.
+    Parse circle descriptions and extract the number of circles from reasoning text.
+    
+    Args:
+        reasoning (str): Text containing circle descriptions, e.g.,
+            "The image contains 5 circles... Details: A blue circle with radius 49 at location <loc_127><loc_149>, ...".
+    
+    Returns:
+        tuple: (list of dicts with keys 'color', 'radius', 'x', 'y', number of circles).
     """
+    # Pattern for circle descriptions: "A {color} circle with radius {radius} at location <loc_x><loc_y>"
     pattern = re.compile(
-        r"-\s*Color\s+(?P<color>\w+),\s*size\s+(?P<size>\d+),\s*at\s*\(\s*(?P<x>\d+)\s*,\s*(?P<y>\d+)\s*\)"
+        r"A\s+(?P<color>\w+)\s+circle\s+with\s+radius\s+(?P<radius>\d+)\s+at\s+location\s+<loc_(?P<x>\d+)><loc_(?P<y>\d+)>"
     )
     circles = [m.groupdict() for m in pattern.finditer(reasoning or "")]
-    return circles
-
+    
+    # Convert numeric fields to integers
+    for circle in circles:
+        circle['radius'] = int(circle['radius'])
+        circle['x'] = int(circle['x'])
+        circle['y'] = int(circle['y'])
+    
+    # Extract the number of circles from the summary (e.g., "The image contains 5 circles")
+    count_match = re.search(r"The\s+image\s+contains\s+(\d+)\s+circles", reasoning, re.IGNORECASE)
+    
+    # Num circle conclude
+    num_circles_conclude = 0
+    if count_match:
+        num_circles_conclude = int(count_match.group(1))
+        
+    
+    return circles, num_circles_conclude
 
 
 
@@ -167,18 +200,108 @@ def reward_function_vlm(generated_text: str, gold_text: str) -> float:
     else:
         reward -= 1.0
 
-    # 3) compare how many circles the reasoning actually enumerated
-    gen_circles  = extract_circles_from_reasoning(gen_reason)
-    gold_circles = extract_circles_from_reasoning(gold_reason)
-    if len(gen_circles) == len(gold_circles):
-        reward += 2.0
-    else:
-        reward -= 2.0
 
     return reward
 
 
 
+def reward_function_vlm1(generated_text: str, gold_text: str) -> float:
+    """
+    Reward based on:
+      1) Correct final answer (+3) or incorrect (–3)
+      2) Presence of a well-formed <think> block (+1 if present, –1 if missing)
+      3) Matching circle counts between generated reasoning and gold reasoning (+2 if match, –2 if mismatch)
+    """
+    # extract answer and reasoning
+    gen_reason, gen_ans = extract_vlm_data(generated_text)
+    gold_reason, gold_ans = extract_vlm_data(gold_text)
+
+    # if we can’t even parse tags, heavy penalty
+    if gen_reason is None or gen_ans is None:
+        return -5.0
+
+    reward = 0.0
+
+    # 1) final‐answer correctness
+    if gen_ans.lower() == gold_ans.lower():
+        reward += 3.0
+    else:
+        reward -= 3.0
+
+    # 2) presence of reasoning block
+    if "<think>" in generated_text and "</think>" in generated_text:
+        reward += 1.0
+    else:
+        reward -= 1.0
+
+    # 3) compare how many circles the reasoning actually enumerated
+    # gen_circles  = extract_circles_from_reasoning(gen_reason)
+    # gold_circles = extract_circles_from_reasoning(gold_reason)
+    gen_circles, num_gen_circle_conclude = extract_circles_from_reasoning(gen_reason)
+    gold_circles, num_gold_circle_conclude = extract_circles_from_reasoning(gold_reason)
+    if len(gen_circles) == len(gold_circles):
+        reward += 2.0
+    else:
+        reward -= 2.0
+        
+    # Add consitency reward todo devu
+
+    return reward
+
+def reward_function_vlm_v2(generated_text: str, gold_text: str) -> float:
+    """
+    Reward based on:
+      1) Correct final answer (+2/-2)
+      2) Presence of a well-formed <think> block (+1/-1)
+      3) Matching circle counts (+1/-1) and properties (+0.5 per match, up to +2)
+      4) Consistency between reasoning conclusion and answer (+1/-1)
+    Prints accumulated reward after each check.
+    """
+    # Extract answer and reasoning
+    gen_reason, gen_ans = extract_vlm_data(generated_text)
+    gold_reason, gold_ans = extract_vlm_data(gold_text)
+
+    # Penalty for unparseable tags
+    if gen_reason is None or gen_ans is None:
+        print(f"Accumulated reward after parsing check: -3.0")
+        return -3.0
+
+    reward = 0.0
+
+    # 1) Final answer correctness
+    if gen_ans.lower() == gold_ans.lower():
+        reward += 2.0
+    else:
+        reward -= 2.0
+    print(f"Accumulated reward after answer correctness: {reward}")
+
+    # 2) Presence of reasoning block
+    if "<think>" in generated_text and "</think>" in generated_text:
+        reward += 1.0
+    else:
+        reward -= 1.0
+    print(f"Accumulated reward after reasoning block check: {reward}")
+
+    # 3) Compare circle counts and properties
+    gen_circles, num_gen_circle_conclude = extract_circles_from_reasoning(gen_reason)
+    gold_circles, num_gold_circle_conclude = extract_circles_from_reasoning(gold_reason)
+    print(f'NUm gen_cicles:{len(gen_circles)}. num gold cirelcts:{len(gold_circles)}')
+    if len(gen_circles) == len(gold_circles):
+        reward += 1.0
+    else:
+        reward -= 1.0
+    print(f"Accumulated reward after circle count check: {reward}")
+    # Partial credit for matching properties (e.g., radius, location, color)
+
+    # 4) Consistency: Check if reasoning conclusion matches answer
+    is_even = len(gen_circles) % 2 == 0
+    if (is_even and gen_ans.lower() == "even") or (not is_even and gen_ans.lower() == "odd"):
+        reward += 1.0
+    else:
+        reward -= 1.0
+    print(f"Accumulated reward after consistency check: {reward}")
+
+    return reward
 ###################################################
 #  E. The GRPO Training Loop
 ###################################################

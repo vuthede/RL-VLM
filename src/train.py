@@ -7,31 +7,31 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-def run_example(model, processor, device, task_prompt, text_input, image):
-    """
-    Runs the model on a single example and returns the processed answer.
-    """
-    if task_prompt == "CAPTION":
-        prompt = task_prompt
-    else:
-        prompt = task_prompt +  text_input
+# def run_example(model, processor, device, task_prompt, text_input, image):
+#     """
+#     Runs the model on a single example and returns the processed answer.
+#     """
+#     if task_prompt == "CAPTION":
+#         prompt = task_prompt
+#     else:
+#         prompt = task_prompt +  text_input
 
-    if image.mode != "RGB":
-        image = image.convert("RGB")
+#     if image.mode != "RGB":
+#         image = image.convert("RGB")
 
-    inputs = processor(text=prompt, images=image, return_tensors="pt").to(device)
-    generated_ids = model.generate(
-        input_ids=inputs["input_ids"],
-        pixel_values=inputs["pixel_values"],
-        max_new_tokens=1024,
-        num_beams=3
-    )
-    generated_text = processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
-    #print(task_prompt)
-    parsed_answer = processor.post_process_generation(
-        generated_text, task=task_prompt, image_size=(image.width, image.height)
-    )
-    return parsed_answer
+#     inputs = processor(text=prompt, images=image, return_tensors="pt").to(device)
+#     generated_ids = model.generate(
+#         input_ids=inputs["input_ids"],
+#         pixel_values=inputs["pixel_values"],
+#         max_new_tokens=1024,
+#         num_beams=3
+#     )
+#     generated_text = processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
+#     #print(task_prompt)
+#     parsed_answer = processor.post_process_generation(
+#         generated_text, task=task_prompt, image_size=(image.width, image.height)
+#     )
+#     return parsed_answer
 
 def collate_fn(batch, processor, device):
     questions, answers, images = zip(*batch)
@@ -105,26 +105,26 @@ def train_model(train_loader, val_loader, model, processor, device, epochs=10, l
     torch.cuda.empty_cache()
     logger.info("Training complete.")
 
-def evaluate_samples(model, processor, device, data, dataset_partition, prefix, N=20, Q="Is the number of circles odd or even?", show_images=False, print_outputs=False):
-    """
-    Evaluates the model on a subset of samples.
-    """
-    #from IPython.display import display  # for notebooks
-    correct_answers = 0
-    for idx in range(N):
-        result = run_example(model, processor, device, prefix, Q, data[dataset_partition][idx]['image'])
-        #print(result)
-        words = result[prefix].split()
-        last_word = words[-1].strip(".'\"").lower()
+# def evaluate_samples(model, processor, device, data, dataset_partition, prefix, N=20, Q="Is the number of circles odd or even?", show_images=False, print_outputs=False):
+#     """
+#     Evaluates the model on a subset of samples.
+#     """
+#     #from IPython.display import display  # for notebooks
+#     correct_answers = 0
+#     for idx in range(N):
+#         result = run_example(model, processor, device, prefix, Q, data[dataset_partition][idx]['image'])
+#         #print(result)
+#         words = result[prefix].split()
+#         last_word = words[-1].strip(".'\"").lower()
     
-        if data[dataset_partition][idx]['answers'][8] == result[prefix]:
-            correct_answers += 1
+#         if data[dataset_partition][idx]['answers'][8] == result[prefix]:
+#             correct_answers += 1
 
-        if print_outputs:
-            print(result[prefix], " ||| ", last_word, " ||| ", data[dataset_partition][idx]['answers'][8])
+#         if print_outputs:
+#             print(result[prefix], " ||| ", last_word, " ||| ", data[dataset_partition][idx]['answers'][8])
         
-        #if show_images:
-        #    display(data[dataset_partition][idx]['image'].resize([350, 350]))
-    accuracy = correct_answers / N
-    logger.info(f"Accuracy: {accuracy}")
-    return accuracy
+#         #if show_images:
+#         #    display(data[dataset_partition][idx]['image'].resize([350, 350]))
+#     accuracy = correct_answers / N
+#     logger.info(f"Accuracy: {accuracy}")
+#     return accuracy

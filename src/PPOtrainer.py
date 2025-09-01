@@ -96,7 +96,7 @@ class PPOTrainer(BaseTrainer):
             self.logger.info("No accelerator: running on raw device.")
 
     @torch.no_grad()
-    def generate_one_pass(self, input_ids, pixel_values, max_new_tokens=None):
+    def generate_one_pass1(self, input_ids, pixel_values, max_new_tokens=None):
         if max_new_tokens is None:
             max_new_tokens = self.max_new_tokens
     
@@ -170,6 +170,72 @@ class PPOTrainer(BaseTrainer):
     
         return generated_ids, all_log_probs, avg_state_emb, all_entropy
     
+    @torch.no_grad()
+    def generate_one_pass(self, input_ids, pixel_values, max_new_tokens=None):
+        if max_new_tokens is None:
+            max_new_tokens = self.max_new_tokens
+        
+        B = input_ids.size(0)
+        H = self.hidden_size
+        
+        # accumulators
+        sum_state_emb = torch.zeros(B, H, device=self.device)
+        num_steps     = 0
+        
+        generated_ids = []
+        all_log_probs = []
+        all_entropy   = []
+        
+        bos_token_id = self.processor.tokenizer.bos_token_id  # Verify default
+        eos_token_id = self.processor.tokenizer.eos_token_id  # Verify default
+        decoder_input_ids = torch.full((B, 1), bos_token_id, dtype=torch.long, device=self.device)
+        finished = torch.zeros(B, dtype=torch.bool, device=self.device)
+        
+        for _ in range(max_new_tokens):
+            outputs = self.model(
+                input_ids=input_ids,
+                pixel_values=pixel_values,
+                decoder_input_ids=decoder_input_ids,
+                output_hidden_states=True,
+                return_dict=True
+            )
+        
+            state_emb = outputs.encoder_last_hidden_state[:, 0, :]  # [B, H]
+            sum_state_emb += state_emb
+            num_steps    += 1
+        
+            logits = outputs.logits[:, -1, :]               # [B, V]
+            dist = torch.distributions.Categorical(logits=logits)
+            nxt    = dist.sample()                          # [B]
+            lp     = dist.log_prob(nxt)                     # [B]
+            ent    = dist.entropy()                         # [B]
+
+            # Advance decoder inputs
+            decoder_input_ids = torch.cat([decoder_input_ids, nxt.unsqueeze(-1)], dim=1)
+            
+            # Mask after EOS
+            mask = ~finished
+            lp   = lp  * mask.float()
+            ent  = ent * mask.float()
+            
+            # Append
+            generated_ids.append(nxt.unsqueeze(-1))
+            all_log_probs.append(lp  .unsqueeze(-1))
+            all_entropy  .append(ent .unsqueeze(-1))
+            
+            # Update finished
+            finished |= (nxt == eos_token_id)
+        
+        generated_ids = torch.cat(generated_ids, dim=1)    # [B, T]
+        all_log_probs = torch.stack(all_log_probs, dim=1)  # [B, T]
+        all_entropy   = torch.stack(all_entropy,   dim=1)  # [B, T]
+        
+        avg_state_emb = sum_state_emb / float(num_steps)   # [B, H]
+        
+        if self.accelerator is not None:
+            self.accelerator.wait_for_everyone()
+        
+        return generated_ids, all_log_probs, avg_state_emb, all_entropy
 
 
     def train_rl(self):

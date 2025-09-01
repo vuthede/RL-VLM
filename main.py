@@ -9,7 +9,9 @@ from src.config import (
     ROLLOUT_BATCH_SIZE, MINIBATCH_SIZE, MAX_NEW_TOKENS, ITERATIONS_PER_EPOCH,
     GRPO_ITERATIONS,
 )
-from src.data_loader import load_and_merge_datasets, CirclesQADataset
+# from src.data_loader import load_and_merge_datasets, CirclesQADataset
+from src.data_loader_nohf import load_and_merge_datasets, CirclesQADataset
+
 from src.model_manager import initialize_model_and_processor
 from src.train import train_model, collate_fn, evaluate_samples
 from src.grpo import grpo_training_loop_subset
@@ -20,12 +22,16 @@ def main():
     logger.info("Starting the project.")
 
     # Load and merge datasets from disk
-    dataset = load_and_merge_datasets()
+    dataset = load_and_merge_datasets(
+        data_dir="/dms/workspace_2025/vuthede/VLM/RL-VLM/notebooks/circles_dataset",
+        prefix="<QA><CirclesQA>",
+        answers_options="full"
+    )
     logger.info("Dataset loaded successfully.")
 
     # Create custom dataset objects for training and validation
-    train_data = CirclesQADataset(dataset["train"], prefix="<CirclesQA>")
-    val_data = CirclesQADataset(dataset["validation"], prefix="<CirclesQA>")
+    train_data = CirclesQADataset(dataset["train"], prefix="<QA><CirclesQA>")
+    val_data = CirclesQADataset(dataset["validation"], prefix="<QA><CirclesQA>")
 
     # Initialize model and processor
     model, processor = initialize_model_and_processor(DEVICE)
@@ -56,7 +62,7 @@ def main():
     logger.info("Evaluating on test split after SFT training.")
     eval_acc = evaluate_samples(
         model, processor, DEVICE, dataset, "test",
-        prefix="<CirclesQA>",
+        prefix="<QA><CirclesQA>",
         N=20, 
         Q="Is the number of circles odd or even?",
         print_outputs=True
@@ -90,7 +96,7 @@ def main():
         logger.info("Evaluating after current GRPO iteration...")
         evaluate_samples(
             model, processor, DEVICE, dataset, "test",
-            prefix="<CirclesQA>",
+            prefix="<QA><CirclesQA>",
             N=20,
             Q="Is the number of circles odd or even?",
             print_outputs=True
@@ -100,7 +106,7 @@ def main():
     logger.info("Final evaluation after GRPO training:")
     final_acc = evaluate_samples(
         model, processor, DEVICE, dataset, "test",
-        prefix="<CirclesQA>",
+        prefix="<QA><CirclesQA>",
         N=20,
         Q="Is the number of circles odd or even?",
         print_outputs=True

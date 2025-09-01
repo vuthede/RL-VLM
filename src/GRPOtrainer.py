@@ -4,8 +4,12 @@ from tqdm import tqdm
 import numpy as np
 from torch.optim import AdamW
 from torch.utils.tensorboard import SummaryWriter
-
-from src.trainer import BaseTrainer, reward_function_vlm
+import copy
+from src.trainer import BaseTrainer #, reward_function_vlm
+from src.grpo import reward_function_vlm #customize to follow format generted data by devu
+from torch.optim.lr_scheduler import StepLR
+import os
+import json
 
 class GRPOTrainer(BaseTrainer):
     """
@@ -26,6 +30,9 @@ class GRPOTrainer(BaseTrainer):
         self.checkpoint_dir = checkpoint_dir
         self.tb = tb_writer
         self.global_step = 0
+        
+        
+        
 
         self.optimizer = AdamW(self.model.parameters(), lr=self.grpo_lr)
         if use_accelerator:
@@ -42,6 +49,52 @@ class GRPOTrainer(BaseTrainer):
     # ------------------------
     @torch.no_grad()
     def generate_one_pass(self, input_ids, pixel_values, max_new_tokens=None):
+        if max_new_tokens is None:
+            max_new_tokens = self.max_new_tokens
+        batch_size = pixel_values.shape[0]
+        generated_ids = []
+        all_log_probs = []
+        all_entropy = []
+        
+        bos_token_id = self.processor.tokenizer.bos_token_id  # Verify default (e.g., 0)
+        eos_token_id = self.processor.tokenizer.eos_token_id  # Verify default (e.g., 2)
+        decoder_input_ids = torch.full((batch_size, 1), bos_token_id, dtype=torch.long, device=self.device)
+        finished = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
+        
+        for _ in range(max_new_tokens):
+            outputs = self.model(
+                input_ids=input_ids,  # Use original input_ids, not current_input_ids
+                pixel_values=pixel_values,
+                decoder_input_ids=decoder_input_ids,
+                output_hidden_states=True,
+                return_dict=True
+            )
+            logits = outputs.logits
+            next_token_logits = logits[:, -1, :]
+            probs = torch.nn.functional.softmax(next_token_logits, dim=-1)
+            distrib = torch.distributions.Categorical(probs)
+            sampled_tokens = distrib.sample()
+            entropy = distrib.entropy()
+            all_entropy.append(entropy)
+            log_probs = distrib.log_prob(sampled_tokens)
+            generated_ids.append(sampled_tokens.unsqueeze(-1))
+            all_log_probs.append(log_probs)
+            decoder_input_ids = torch.cat([decoder_input_ids, sampled_tokens.unsqueeze(-1)], dim=-1)
+            finished |= (sampled_tokens.squeeze(-1) == eos_token_id)
+            if finished.all():
+                break
+        
+        generated_ids = torch.cat(generated_ids, dim=1)
+        all_log_probs = torch.stack(all_log_probs, dim=1)
+        all_entropy = torch.stack(all_entropy, dim=1)
+
+        if self.accelerator is not None:
+            self.accelerator.wait_for_everyone()
+
+        return generated_ids, all_log_probs, None, all_entropy
+
+    @torch.no_grad()
+    def generate_one_pass1(self, input_ids, pixel_values, max_new_tokens=None):
         if max_new_tokens is None:
             max_new_tokens = self.max_new_tokens
         batch_size = pixel_values.shape[0]
@@ -110,20 +163,26 @@ class GRPOTrainer(BaseTrainer):
         for epoch in range(self.config.get("grpo_epochs", 3)):
             # 1) Rollout with old policy
             #old_model = copy.deepcopy(self.model).cpu().eval()
-            old_model = copy.deepcopy(self.model).eval()
+            # old_model = copy.deepcopy(self.model).eval()
             memory, total_r, count = [], 0.0, 0
-            for inputs, answers in tqdm(self.train_loader, desc=f"Rollout Epoch {epoch+1}/{self.config.get('grpo_epochs',3)}"):
+            
+            #### Roll-out ==> Make it in eval model
+            self.model.eval()
+            roll_out_iter = 0
+            for inputs, answers in tqdm(self.train_loader, desc=f"Rollout Epoch {epoch+1}/{self.config.get('grpo_epochs',3)}"): # in config it is 1
                 inp, pix = inputs["input_ids"].to(self.device), inputs["pixel_values"].to(self.device)
-                for i in range(inp.size(0)):
+                roll_out_iter += 1
+                for i in range(inp.size(0)):  # batch size
                     q_ids, q_pix, ref = inp[i:i+1], pix[i:i+1], answers[i]
                     group = []
-                    for _ in range(self.group_size):
+                    for _ in range(self.group_size): # generate different answesr for the same question
                         gen_ids, old_lp, _, _ = self.generate_one_pass(q_ids, q_pix)
-                        txt = self.processor.tokenizer.decode(gen_ids[0], skip_special_tokens=True)
+                        txt = self.processor.tokenizer.decode(gen_ids[0], skip_special_tokens=False)
                         r = reward_function_vlm(txt, ref)
                         group.append((gen_ids, old_lp, r))
                     rs = torch.tensor([g[2] for g in group], device=self.device)
                     advs = (rs - rs.mean())/(rs.std()+1e-8)
+                    # Input, output of each pass in a group
                     for (gen_ids, old_lp, r), adv in zip(group, advs):
                         memory.append({
                             "enc": q_ids.cpu(), "pix": q_pix.cpu(),
@@ -131,7 +190,11 @@ class GRPOTrainer(BaseTrainer):
                             "adv": adv.item()
                         })
                         total_r += r; count += 1
-            del old_model
+           
+                if roll_out_iter >= 4: # * batch_size*groupsize=8. So have 32 prompts
+                    print(f'Break for fast testing. So we have  N_prompts = {inp.size(0)*roll_out_iter} with groupsize={self.group_size}. So  memmorysize= :{len(memory)}')
+                    break
+            # del old_model
             torch.cuda.empty_cache()
             print(f"Avg reward rollout: {total_r/count:.3f}")
             if self.tb:
@@ -176,13 +239,16 @@ class GRPOTrainer(BaseTrainer):
                     new_seq = new_lp[:,1:].sum(1)
                     old_seq = b_old.sum(1)
                     ratio = (new_seq - old_seq).exp()
-                    loss1 = -ratio * b_adv; loss2 = -torch.clamp(ratio,1-self.clip_coef,1+self.clip_coef)*b_adv
+                    loss1 = -ratio * b_adv
+                    loss2 = -torch.clamp(ratio,1-self.clip_coef,1+self.clip_coef)*b_adv
                     policy_loss = torch.max(loss1, loss2).mean()
                     entropy_loss = -self.entropy_coef * ent
                     total_loss = policy_loss + entropy_loss
                     
                     total_loss_avg += total_loss
                     counts += 1
+                    print(f'Backward the {counts}-th time. New seq_prob:{new_seq}. Old one:{old_seq} Total loss when updates:{total_loss}')
+                    
                     
                     self.optimizer.zero_grad(); total_loss.backward()
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(),0.5); self.optimizer.step()
@@ -198,7 +264,7 @@ class GRPOTrainer(BaseTrainer):
                         inp, pix = inputs["input_ids"].to(self.device), inputs["pixel_values"].to(self.device)
                         gen_ids,_,_,_ = self.generate_one_pass(inp,pix)
                         for gi, ans in zip(gen_ids, answers):
-                            txt = self.processor.tokenizer.decode(gi, skip_special_tokens=True)
+                            txt = self.processor.tokenizer.decode(gi, skip_special_tokens=False)
                             vr += reward_function_vlm(txt, ans); nc += 1
                 avg_vr = vr/nc; print(f"Epoch {epoch+1} val reward: {avg_vr:.3f}")
                 if self.tb:

@@ -22,6 +22,12 @@ def initialize_model_and_processor(device):
         revision=MODEL_REVISION
     )
     
+    special_tokens = ["<CirclesQA>", "<think>", "</think>", "<answer>", "</answer>"]
+    processor.tokenizer.add_special_tokens({'additional_special_tokens': special_tokens})
+
+    # Resize model’s token embeddings if necessary
+    model.resize_token_embeddings(len(processor.tokenizer))
+    
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     if torch.backends.mps.is_available():
